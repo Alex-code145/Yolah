@@ -13,12 +13,12 @@ class Cell(Enum):
 class Direction(Enum):
     NORTH = 8
     EAST  = 1
-    SOUTH = -NORTH
-    WEST  = -EAST
-    NORTH_EAST = NORTH + EAST
-    SOUTH_EAST = SOUTH + EAST
-    SOUTH_WEST = SOUTH + WEST
-    NORTH_WEST = NORTH + WEST
+    SOUTH = -8
+    WEST  = -1
+    NORTH_EAST = 9
+    SOUTH_EAST = -7
+    SOUTH_WEST = -9
+    NORTH_WEST = 7
     
     @staticmethod
     def all():
