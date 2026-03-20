@@ -81,7 +81,7 @@ def play_human_vs_mcts():
             state.play(Move.from_str(mv))
         else:
             print("IA MCTS parallèle réfléchit...")
-            move, merged = parallel_mcts(state, time_limit_s=10, workers=None)
+            move, merged = parallel_mcts(state, time_limit_s=3, workers=None)
             print("IA joue :", move)
             state.play(move)
 

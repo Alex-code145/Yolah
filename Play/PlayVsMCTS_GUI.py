@@ -11,6 +11,7 @@ from Jeu.YolahInterface import YolahState
 from MCTS.MCTS import mcts_collect_stats
 
 
+
 class YolahGUI:
     BOARD_SIZE = 8
     CELL_SIZE = 72
@@ -277,7 +278,8 @@ class YolahGUI:
 
     def _compute_ai_move(self, snapshot):
         # Short time limit keeps the interface responsive while still playing decently.
-        stats = mcts_collect_stats(snapshot, iterations=1600, time_limit_s=10)
+        stats = mcts_collect_stats(snapshot, iterations=1600, time_limit_s=4)
+
         if not stats:
             self.ai_queue.put((Move.none(), stats))
             return
