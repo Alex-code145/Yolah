@@ -2,6 +2,8 @@ import sys
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Thread
+import subprocess
+import time
 import tkinter as tk
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -276,13 +278,59 @@ class YolahGUI:
         self.root.after(80, self._poll_ai_move)
 
     def _compute_ai_move(self, snapshot):
-        # Short time limit keeps the interface responsive while still playing decently.
-        stats = mcts_collect_stats(snapshot, iterations=1600, time_limit_s=10)
+        # Prefer C++ engine for speed. Fallback to Python MCTS if binary is unavailable.
+        t0 = time.perf_counter()
+        game = snapshot.game
+        engine_path = Path(__file__).resolve().with_name("PlayVsMCTS_fast")
+        legal_moves = snapshot.legal_moves()
+        legal_move_strs = {str(m) for m in legal_moves}
+
+        if engine_path.exists():
+            cmd = [
+                str(engine_path),
+                "--mcts",
+                str(game.black),
+                str(game.white),
+                str(game.empty),
+                str(game.black_score),
+                str(game.white_score),
+                str(game.ply),
+                "120000",
+                "2.5",
+            ]
+            try:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    check=False,
+                )
+                if result.returncode == 0:
+                    move_str = result.stdout.strip().splitlines()[-1].strip() if result.stdout.strip() else ""
+                    if move_str in legal_move_strs:
+                        elapsed = time.perf_counter() - t0
+                        engine_stats = result.stderr.strip().splitlines()[-1].strip() if result.stderr.strip() else "iterations=unknown"
+                        print(f"AI (C++) {engine_stats}, move={move_str}, total_elapsed={elapsed:.3f}s", flush=True)
+                        self.ai_queue.put((Move.from_str(move_str), {"engine": "cpp"}))
+                        return
+                    print("AI (C++) returned an illegal/empty move, falling back to Python MCTS", flush=True)
+                else:
+                    err = result.stderr.strip().splitlines()[-1] if result.stderr.strip() else ""
+                    print(f"AI (C++) failed with code {result.returncode}. {err}", flush=True)
+            except Exception:
+                print("AI (C++) execution failed, falling back to Python MCTS", flush=True)
+
+        stats = mcts_collect_stats(snapshot, iterations=1600, time_limit_s=2.5)
         if not stats:
+            elapsed = time.perf_counter() - t0
+            print(f"AI (Python fallback) no stats, elapsed={elapsed:.3f}s", flush=True)
             self.ai_queue.put((Move.none(), stats))
             return
 
         best_move_str = max(stats.items(), key=lambda item: item[1][0])[0]
+        elapsed = time.perf_counter() - t0
+        print(f"AI (Python fallback) move={best_move_str}, elapsed={elapsed:.3f}s", flush=True)
         self.ai_queue.put((Move.from_str(best_move_str), stats))
 
     def _poll_ai_move(self):

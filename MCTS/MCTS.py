@@ -16,7 +16,8 @@ class MCTSNode:
 
 
 def uct(parent, child, c=1.4):
-    return child.value() + c * math.sqrt(
+    # child.value() is from the child player's perspective; negate for parent perspective.
+    return -child.value() + c * math.sqrt(
         math.log(parent.visit_count + 1) / (child.visit_count + 1e-9)
     )
 
@@ -54,19 +55,21 @@ def backpropagate(node, reward):
         node = node.parent
 
 
-def mcts_collect_stats(root_state, iterations=800, time_limit_s=None):
+def mcts_collect_stats(root_state, iterations=800, time_limit_s=None, verbose=True):
     root = MCTSNode(root_state)
-    start = time.time()
+    start = time.perf_counter()
     it = 0
 
     while True:
-        if time_limit_s and time.time() - start > time_limit_s:
+        if time_limit_s and time.perf_counter() - start > time_limit_s:
             break
         if not time_limit_s and it >= iterations:
             break
 
         leaf = expand(select(root))
-        reward = rollout(leaf.state)
+        # `result` is absolute (+1 black wins, -1 white wins). Convert to leaf player's perspective.
+        result = rollout(leaf.state)
+        reward = result if leaf.state.current_player() == 0 else -result
         backpropagate(leaf, reward)
         it += 1
 
@@ -75,5 +78,8 @@ def mcts_collect_stats(root_state, iterations=800, time_limit_s=None):
     for ch in root.children:
         stats[str(ch.move)] = (ch.visit_count, ch.value_sum)
 
-    print(f"MCTS: {it} iterations, time taken: {time.time() - start:.2f}s")
+    elapsed = time.perf_counter() - start
+    if verbose:
+        print(f"MCTS: iterations={it}, elapsed={elapsed:.2f}s")
+
     return stats
