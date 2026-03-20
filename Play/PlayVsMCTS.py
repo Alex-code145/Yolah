@@ -4,6 +4,18 @@ from typing_extensions import final
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from multiprocessing import Pool, cpu_count
+import argparse
+import os
+import torch
+
+try:
+    from net.nn_model import YolahNet
+    from net.evaluator import NeuralEvaluator
+    from MCTS.alpha_mcts import alpha_mcts
+except Exception:
+    YolahNet = None
+    NeuralEvaluator = None
+    alpha_mcts = None
 from Jeu.Yolah import Yolah, Move
 from Jeu.YolahInterface import YolahState
 from MCTS.MCTS import mcts_collect_stats
@@ -66,9 +78,32 @@ def parallel_mcts(root_state, iterations=800, time_limit_s=None, workers=None):
 
     return best_move, merged
 
+
+def load_evaluator(model_path: str = None, device: str = "cpu"):
+    """Load a PyTorch model and return a NeuralEvaluator or None if not available."""
+    if model_path is None:
+        return None
+    if NeuralEvaluator is None or YolahNet is None:
+        print("Neural evaluator or model not available (missing imports)")
+        return None
+    if not os.path.exists(model_path):
+        print(f"Model file not found: {model_path}")
+        return None
+    model = YolahNet()
+    try:
+        ck = torch.load(model_path, map_location=device)
+        if isinstance(ck, dict) and "model_state" in ck:
+            model.load_state_dict(ck["model_state"])
+        else:
+            model.load_state_dict(ck)
+    except Exception as e:
+        print(f"Failed to load model: {e}")
+        return None
+    return NeuralEvaluator(model, device=device)
+
 # --- Boucle de jeu ---
 
-def play_human_vs_mcts():
+def play_human_vs_mcts(evaluator=None, use_net=False, iterations=800, time_limit_s=None):
     state = YolahState()
     print(state.game)
 
@@ -80,10 +115,16 @@ def play_human_vs_mcts():
             mv = input("Ton coup : ").strip()
             state.play(Move.from_str(mv))
         else:
-            print("IA MCTS parallèle réfléchit...")
-            move, merged = parallel_mcts(state, time_limit_s=10, workers=None)
-            print("IA joue :", move)
-            state.play(move)
+            if use_net and evaluator is not None and alpha_mcts is not None:
+                print("IA réseau+MCTS réfléchit...")
+                move, merged = alpha_mcts(state, evaluator, iterations=iterations, time_limit_s=time_limit_s)
+                print("IA (network) joue:", move)
+                state.play(move)
+            else:
+                print("IA MCTS parallèle réfléchit...")
+                move, merged = parallel_mcts(state, time_limit_s=10, workers=None)
+                print("IA joue :", move)
+                state.play(move)
 
         print(state.game)
 
@@ -92,4 +133,18 @@ def play_human_vs_mcts():
 
 
 if __name__ == "__main__":
-    play_human_vs_mcts()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--use-net", action="store_true", help="Use neural network guided MCTS")
+    parser.add_argument("--model", type=str, default=None, help="Path to model .pt file")
+    parser.add_argument("--iterations", type=int, default=800, help="MCTS iterations when using network")
+    parser.add_argument("--time", type=float, default=None, help="Time limit seconds when using network")
+    args = parser.parse_args()
+
+    evaluator = None
+    if args.use_net:
+        evaluator = load_evaluator(args.model)
+        if evaluator is None:
+            print("Falling back to classical MCTS because evaluator could not be loaded.")
+            args.use_net = False
+
+    play_human_vs_mcts(evaluator=evaluator, use_net=args.use_net, iterations=args.iterations, time_limit_s=args.time)

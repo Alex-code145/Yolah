@@ -4,6 +4,7 @@ from queue import Empty, Queue
 from threading import Thread
 import subprocess
 import time
+from tkinter import filedialog, messagebox
 import tkinter as tk
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -11,6 +12,16 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 from Jeu.Yolah import Cell, Move, Square, Yolah
 from Jeu.YolahInterface import YolahState
 from MCTS.MCTS import mcts_collect_stats
+import os
+import torch
+try:
+    from net.nn_model import YolahNet
+    from net.evaluator import NeuralEvaluator
+    from MCTS.alpha_mcts import alpha_mcts
+except Exception:
+    YolahNet = None
+    NeuralEvaluator = None
+    alpha_mcts = None
 
 
 class YolahGUI:
@@ -27,6 +38,27 @@ class YolahGUI:
         self.selected_from = None
         self.ai_thinking = False
         self.ai_queue = Queue()
+        self.use_network = True
+        self.evaluator = None
+
+        # auto-load model if present in repo root as 'model.pt'
+        repo_root = Path(__file__).resolve().parents[1]
+        model_path = repo_root / "model.pt"
+        if model_path.exists() and NeuralEvaluator is not None and YolahNet is not None:
+            try:
+                model = YolahNet()
+                ck = torch.load(str(model_path), map_location="cpu")
+                if isinstance(ck, dict) and "model_state" in ck:
+                    model.load_state_dict(ck["model_state"])
+                else:
+                    model.load_state_dict(ck)
+                self.evaluator = NeuralEvaluator(model, device="cpu")
+                self.use_network = True
+                # remember loaded model name for the label created later
+                self._loaded_model_name = model_path.name
+                print(f"Loaded network model from {model_path}")
+            except Exception as e:
+                print(f"Failed to load model.pt: {e}")
 
         self.status_var = tk.StringVar(value="Black to move (you)")
         self.score_var = tk.StringVar(value="Score 0 - 0")
@@ -96,6 +128,29 @@ class YolahGUI:
             pady=6,
         ).pack(side="left", padx=(8, 0))
 
+        tk.Button(
+            bottom,
+            text="Load model...",
+            command=self.load_model_dialog,
+            bg="#5a6b9a",
+            fg="white",
+            activebackground="#41527a",
+            relief="flat",
+            padx=12,
+            pady=6,
+        ).pack(side="left", padx=(8, 0))
+
+        self.model_label_var = tk.StringVar(value="No model loaded")
+        if hasattr(self, "_loaded_model_name"):
+            self.model_label_var.set(self._loaded_model_name)
+        tk.Label(
+            bottom,
+            textvariable=self.model_label_var,
+            font=("DejaVu Sans", 10),
+            fg="#4a3a28",
+            bg="#f5efe2",
+        ).pack(side="left", padx=(8, 0))
+
         self.refresh_view()
 
     def new_game(self):
@@ -104,6 +159,31 @@ class YolahGUI:
         self.ai_thinking = False
         self.ai_queue = Queue()
         self.refresh_view()
+
+    def load_model_dialog(self):
+        if YolahNet is None or NeuralEvaluator is None:
+            messagebox.showerror("Load model", "Neural network support is not available (missing imports)")
+            return
+        initial = str(Path(__file__).resolve().parents[1])
+        fp = filedialog.askopenfilename(title="Select model checkpoint", initialdir=initial, filetypes=[("PyTorch model", "*.pt"), ("All files", "*")])
+        if not fp:
+            return
+
+        try:
+            model = YolahNet()
+            ck = torch.load(fp, map_location="cpu")
+            if isinstance(ck, dict) and "model_state" in ck:
+                model.load_state_dict(ck["model_state"])
+            else:
+                model.load_state_dict(ck)
+            self.evaluator = NeuralEvaluator(model, device="cpu")
+            self.use_network = True
+            self.model_label_var.set(Path(fp).name)
+            messagebox.showinfo("Load model", f"Loaded model: {Path(fp).name}")
+            print(f"Loaded model from {fp}")
+        except Exception as e:
+            messagebox.showerror("Load model", f"Failed to load model: {e}")
+            print(f"Failed to load model {fp}: {e}")
 
     def square_to_screen(self, square):
         col = square.sq % self.BOARD_SIZE
@@ -284,6 +364,16 @@ class YolahGUI:
         engine_path = Path(__file__).resolve().with_name("PlayVsMCTS_fast")
         legal_moves = snapshot.legal_moves()
         legal_move_strs = {str(m) for m in legal_moves}
+        # If network is available and requested, try alpha_mcts first (preferred)
+        if self.use_network and self.evaluator is not None and alpha_mcts is not None:
+            try:
+                move, stats = alpha_mcts(snapshot, self.evaluator, iterations=800, time_limit_s=2.5)
+                elapsed = time.perf_counter() - t0
+                print(f"AI (network) move={move}, elapsed={elapsed:.3f}s", flush=True)
+                self.ai_queue.put((move, stats))
+                return
+            except Exception as e:
+                print(f"Network MCTS failed: {e}, falling back to other engines", flush=True)
 
         if engine_path.exists():
             cmd = [
