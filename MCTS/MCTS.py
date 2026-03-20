@@ -75,4 +75,5 @@ def mcts_collect_stats(root_state, iterations=800, time_limit_s=None):
     for ch in root.children:
         stats[str(ch.move)] = (ch.visit_count, ch.value_sum)
 
+    print(f"MCTS: {it} iterations, time taken: {time.time() - start:.2f}s")
     return stats
