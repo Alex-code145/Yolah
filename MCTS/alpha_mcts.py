@@ -33,25 +33,21 @@ def select(node, c_puct=1.0):
     return node
 
 
-def expand_with_policy(node, evaluator):
-    # evaluator(state) -> (policy_probs: dict move_str->prob, value: float)
+def expand_with_policy(node, policy_probs):
+    # policy_probs: dict move_str->prob
     if node.state.is_terminal():
         return node, 1.0 if node.state.result() == 1 else -1.0 if node.state.result() == -1 else 0.0
 
-    policy_probs, value = evaluator(node.state)
     # policy_probs: dict mapping move_str to prior probability
+    from Jeu.Yolah import Move  # local import to avoid cycle at top
     for move_str, prob in policy_probs.items():
         # create child state by cloning and playing the move
-        # move_str must be parseable by Move.from_str in calling code; here we rely on legal_moves strings
         s2 = node.state.clone()
-        # parse move
-        from Jeu.Yolah import Move  # local import to avoid cycle at top
         m = Move.from_str(move_str)
         s2.play(m)
         node.children[move_str] = AlphaNode(s2, parent=node, move=m, prior=prob)
 
-    # pick a random child to continue the search (common approach) - but we'll return node for evaluation externally
-    return node, value
+    return node, None
 
 
 def backpropagate(node, value):
@@ -74,28 +70,90 @@ def alpha_mcts(root_state, evaluator, iterations=800, time_limit_s=None, c_puct=
         if not time_limit_s and it >= iterations:
             break
 
-        leaf = select(root, c_puct=c_puct)
-        if leaf.state.is_terminal():
-            # terminal node -> backprop the result
-            result = leaf.state.result()
-            value = result if leaf.state.current_player() == 0 else -result
-            backpropagate(leaf, value)
+        # collect a batch of leaves for batched evaluation
+        leaves = [select(root, c_puct=c_puct)]
+        # try to gather more leaves by repeating selection (non-destructive)
+        for _ in range(15):
+            l = select(root, c_puct=c_puct)
+            if l is leaves[0]:
+                break
+            leaves.append(l)
+
+        # filter out terminal leaves and already-expanded ones
+        eval_leaves = [l for l in leaves if (not l.state.is_terminal()) and (not l.children)]
+
+        if not eval_leaves:
+            # fallback: handle a single selected leaf
+            leaf = leaves[0]
+            if leaf.state.is_terminal():
+                result = leaf.state.result()
+                value = result if leaf.state.current_player() == 0 else -result
+                backpropagate(leaf, value)
+                it += 1
+                continue
+
+            # single evaluation (no batch available or no eligible leaves)
+            try:
+                if hasattr(evaluator, 'batch_eval'):
+                    policy_probs, value = evaluator.batch_eval([leaf])[0]
+                else:
+                    policy_probs, value = evaluator(leaf.state)
+            except Exception:
+                policy_probs, value = evaluator(leaf.state)
+
+            node_after_expand, _ = expand_with_policy(leaf, policy_probs)
+            if node_after_expand.children:
+                child = max(node_after_expand.children.values(), key=lambda ch: ch.prior)
+                if value is None:
+                    try:
+                        _, value = evaluator(leaf.state)
+                    except Exception:
+                        value = 0.0
+                backpropagate(child, value)
+            else:
+                if value is None:
+                    try:
+                        _, value = evaluator(leaf.state)
+                    except Exception:
+                        value = 0.0
+                backpropagate(leaf, value)
+
             it += 1
             continue
 
-        # expand leaf using network policy and get value estimate
-        node_after_expand, value = expand_with_policy(leaf, evaluator)
-        # If expansion generated children, pick one child for backup (could also evaluate at leaf)
-        if node_after_expand.children:
-            # choose child with highest prior (or random)
-            child = max(node_after_expand.children.values(), key=lambda ch: ch.prior)
-            # Use network value for backpropagation
-            backpropagate(child, value)
+        # evaluate batch either via evaluator.batch_eval if available, else fall back to single evals
+        results = []
+        if hasattr(evaluator, 'batch_eval'):
+            try:
+                results = evaluator.batch_eval(eval_leaves)
+            except Exception:
+                results = [evaluator(l.state) for l in eval_leaves]
         else:
-            # no children (shouldn't happen), use value at leaf
-            backpropagate(leaf, value)
+            results = [evaluator(l.state) for l in eval_leaves]
 
-        it += 1
+        # expand each leaf with corresponding policy and backpropagate its value
+        for l, (policy_probs, value) in zip(eval_leaves, results):
+            node_after_expand, _ = expand_with_policy(l, policy_probs)
+            if node_after_expand.children:
+                child = max(node_after_expand.children.values(), key=lambda ch: ch.prior)
+                # if evaluator.batch_eval doesn't provide a value (ov fallback), we may have value None
+                if value is None:
+                    # try to get scalar value from a single evaluator call
+                    try:
+                        _, value = evaluator(l.state)
+                    except Exception:
+                        value = 0.0
+                backpropagate(child, value)
+            else:
+                # no children (shouldn't happen), use value at leaf
+                if value is None:
+                    try:
+                        _, value = evaluator(l.state)
+                    except Exception:
+                        value = 0.0
+                backpropagate(l, value)
+
+        it += len(eval_leaves)
 
     # build stats similar to original mcts_collect_stats: move_str -> (visits, value_sum)
     stats = {}
