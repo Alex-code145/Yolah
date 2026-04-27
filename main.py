@@ -7,7 +7,8 @@ def play_game():
     while not state.is_terminal():
         print(state.game)
 
-        move = choose_minimax_move(state, depth=3)
+        print("Thinking...")
+        move = choose_minimax_move(state, depth=2)
         print("Chosen move:", move)
 
         state.play(move)
